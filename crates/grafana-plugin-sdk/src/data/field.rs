@@ -2,10 +2,11 @@
 use std::{
     collections::{BTreeMap, HashMap},
     iter::FromIterator,
+    sync::Arc,
 };
 
-use arrow2::{
-    array::Array,
+use arrow::{
+    array::{Array, ArrayRef},
     datatypes::{DataType, Field as ArrowField, TimeUnit},
 };
 use serde::{Deserialize, Serialize};
@@ -40,34 +41,18 @@ pub struct Field {
     /// The types of values contained within the `Array` MUST match the
     /// type information in `type_info` at all times. The various `into_field`-like
     /// functions and the `set_values` methods should ensure this.
-    pub(crate) values: Box<dyn Array>,
+    pub(crate) values: ArrayRef,
     /// Type information for this field, as understood by Grafana.
     pub(crate) type_info: TypeInfo,
 }
 
 impl Field {
     pub(crate) fn to_arrow_field(&self) -> Result<ArrowField, serde_json::Error> {
-        let metadata = match (self.labels.is_empty(), self.config.as_ref()) {
-            (true, None) => Default::default(),
-            (false, None) => [("labels".to_string(), serde_json::to_string(&self.labels)?)]
-                .into_iter()
-                .collect(),
-            (false, Some(c)) => [("config".to_string(), serde_json::to_string(&c)?)]
-                .into_iter()
-                .collect(),
-            (true, Some(c)) => [
-                ("labels".to_string(), serde_json::to_string(&self.labels)?),
-                ("config".to_string(), serde_json::to_string(&c)?),
-            ]
-            .into_iter()
-            .collect(),
-        };
-        Ok(ArrowField {
-            name: self.name.clone(),
-            data_type: self.type_info.frame.into(),
-            is_nullable: self.type_info.nullable.unwrap_or_default(),
-            metadata,
-        })
+        Ok(ArrowField::new(
+            &self.name,
+            self.type_info.frame.into(),
+            self.type_info.nullable.unwrap_or_default(),
+        ))
     }
 
     /// Return a new field with the given name.
@@ -147,7 +132,7 @@ impl Field {
     /// do not match the types of the existing data.
     ///
     /// ```rust
-    /// use arrow2::array::Utf8Array;
+    /// use grafana_plugin_sdk::arrow::array::StringArray;
     /// use grafana_plugin_sdk::prelude::*;
     ///
     /// let mut field = ["a", "b", "c"]
@@ -157,7 +142,7 @@ impl Field {
     ///     field
     ///         .values()
     ///         .as_any()
-    ///         .downcast_ref::<Utf8Array<i32>>()
+    ///         .downcast_ref::<StringArray>()
     ///         .unwrap()
     ///         .iter()
     ///         .collect::<Vec<_>>(),
@@ -181,7 +166,7 @@ impl Field {
                 field: self.name.clone(),
             });
         }
-        self.values = Box::new(V::convert_arrow_array(
+        self.values = Arc::new(V::convert_arrow_array(
             values
                 .into_iter()
                 .map(U::into_field_type)
@@ -200,7 +185,7 @@ impl Field {
     /// do not match the types of the existing data.
     ///
     /// ```rust
-    /// use arrow2::array::Utf8Array;
+    /// use grafana_plugin_sdk::arrow::array::StringArray;
     /// use grafana_plugin_sdk::prelude::*;
     ///
     /// let mut field = ["a", "b", "c"]
@@ -210,7 +195,7 @@ impl Field {
     ///     field
     ///         .values()
     ///         .as_any()
-    ///         .downcast_ref::<Utf8Array<i32>>()
+    ///         .downcast_ref::<StringArray>()
     ///         .unwrap()
     ///         .iter()
     ///         .collect::<Vec<_>>(),
@@ -234,7 +219,7 @@ impl Field {
                 field: self.name.clone(),
             });
         }
-        self.values = Box::new(V::convert_arrow_array(
+        self.values = Arc::new(V::convert_arrow_array(
             values
                 .into_iter()
                 .map(|x| x.and_then(U::into_field_type))
@@ -253,25 +238,25 @@ impl Field {
     /// do not match the types of the existing data.
     ///
     /// ```rust
-    /// use arrow2::array::{PrimitiveArray, Utf8Array};
+    /// use grafana_plugin_sdk::arrow::array::{types, PrimitiveArray, StringArray};
     /// use grafana_plugin_sdk::prelude::*;
     ///
     /// let mut field = ["a", "b", "c"]
     ///     .into_field("x");
-    /// let new_values = Utf8Array::<i32>::from(["d", "e", "f"].map(Some));
+    /// let new_values = StringArray::from_iter_values(["d", "e", "f"]);
     /// assert!(field.set_values_array(new_values).is_ok());
     /// assert_eq!(
     ///     field
     ///         .values()
     ///         .as_any()
-    ///         .downcast_ref::<Utf8Array<i32>>()
+    ///         .downcast_ref::<StringArray>()
     ///         .unwrap()
     ///         .iter()
     ///         .collect::<Vec<_>>(),
     ///     vec![Some("d"), Some("e"), Some("f")],
     /// );
     ///
-    /// let bad_values = PrimitiveArray::<u32>::from([1, 2, 3].map(Some));
+    /// let bad_values = PrimitiveArray::<types::UInt32Type>::from_iter_values([1, 2, 3]);
     /// assert!(field.set_values_array(bad_values).is_err());
     /// ```
     pub fn set_values_array<T>(&mut self, values: T) -> Result<(), crate::data::error::Error>
@@ -285,7 +270,7 @@ impl Field {
                 field: self.name.clone(),
             });
         }
-        self.values = Box::new(values);
+        self.values = Arc::new(values);
         Ok(())
     }
 }
@@ -296,7 +281,7 @@ impl PartialEq for Field {
             && self.labels == other.labels
             && self.config == other.config
             && self.type_info == other.type_info
-            && arrow2::array::equal(&*self.values, &*other.values)
+            && self.values.as_ref() == other.values.as_ref()
     }
 }
 
@@ -329,7 +314,7 @@ where
                 frame: U::TYPE_INFO_TYPE,
                 nullable: Some(false),
             },
-            values: Box::new(V::convert_arrow_array(
+            values: Arc::new(V::convert_arrow_array(
                 self.into_iter()
                     .map(U::into_field_type)
                     .collect::<V::Array>(),
@@ -361,7 +346,7 @@ where
                 frame: U::TYPE_INFO_TYPE,
                 nullable: Some(true),
             },
-            values: Box::new(V::convert_arrow_array(
+            values: Arc::new(V::convert_arrow_array(
                 self.into_iter()
                     .map(|x| x.and_then(U::into_field_type))
                     .collect::<V::Array>(),
@@ -371,7 +356,7 @@ where
     }
 }
 
-/// Helper trait for creating a [`Field`] from an [`Array`][arrow2::array::Array].
+/// Helper trait for creating a [`Field`] from an [`Array`][arrow::array::Array].
 pub trait ArrayIntoField {
     /// Create a `Field` using `self` as the values.
     ///
@@ -386,6 +371,22 @@ where
     T: Array + 'static,
 {
     fn try_into_field(self, name: impl Into<String>) -> Result<Field, error::Error> {
+        ArrayRefIntoField::try_into_field(Arc::new(self) as ArrayRef, name)
+    }
+}
+
+/// Helper trait for creating a [`Field`] from an [`ArrayRef`][arrow::array::ArrayRef].
+pub trait ArrayRefIntoField {
+    /// Create a `Field` using `self` as the values.
+    ///
+    /// # Errors
+    ///
+    /// This returns an error if the values are not valid field types.
+    fn try_into_field(self, name: impl Into<String>) -> Result<Field, error::Error>;
+}
+
+impl ArrayRefIntoField for ArrayRef {
+    fn try_into_field(self, name: impl Into<String>) -> Result<Field, error::Error> {
         Ok(Field {
             name: name.into(),
             labels: Default::default(),
@@ -394,7 +395,7 @@ where
                 frame: self.data_type().try_into()?,
                 nullable: Some(true),
             },
-            values: Box::new(self),
+            values: self,
         })
     }
 }
@@ -469,7 +470,11 @@ impl TryFrom<&DataType> for TypeInfoType {
             DataType::Float64 => Self::Float64,
             DataType::Utf8 => Self::String,
             DataType::Boolean => Self::Bool,
-            DataType::Timestamp(..) => Self::Time,
+            DataType::Date32
+            | DataType::Date64
+            | DataType::Time32(..)
+            | DataType::Time64(..)
+            | DataType::Timestamp(..) => Self::Time,
             // TODO - handle time correctly.
             other => return Err(error::Error::UnsupportedArrowDataType(other.clone())),
         })
@@ -789,7 +794,7 @@ mod tests {
                 #[test]
                 #[allow(non_snake_case)]
                 fn [< create_field_from_array_ $t >]() {
-                    let array = <$t as FieldType>::Array::from_slice([<$t>::default()]);
+                    let array = <$t as FieldType>::Array::from([<$t>::default()].to_vec());
                     let field = array.try_into_field("x".to_string()).unwrap();
                     assert_eq!(field.name, "x");
                     assert_eq!(field.values.len(), 1)

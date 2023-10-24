@@ -1,11 +1,10 @@
 //! Serialization of [`Frame`]s to the JSON format.
 use std::{cell::RefCell, collections::BTreeMap};
 
-use arrow2::{
-    array::{Array, BooleanArray, PrimitiveArray, Utf8Array},
-    datatypes::{DataType, TimeUnit},
+use arrow::{
+    array::{types, Array, BooleanArray, PrimitiveArray, StringArray},
+    datatypes::{ArrowPrimitiveType, DataType, TimeUnit},
     temporal_conversions::MILLISECONDS_IN_DAY,
-    types::NativeType,
 };
 use num_traits::Float;
 use serde::{
@@ -153,62 +152,83 @@ impl<'a> Serialize for SerializableArray<'a> {
                     .unwrap()
                     .iter(),
             ),
-            DataType::Utf8 | DataType::LargeUtf8 => serializer.collect_seq(
-                array
-                    .as_any()
-                    .downcast_ref::<Utf8Array<i32>>()
-                    .unwrap()
-                    .iter(),
-            ),
-            DataType::Int8 => serializer.collect_seq(primitive_array_iter::<i8>(array)),
-            DataType::Int16 => serializer.collect_seq(primitive_array_iter::<i16>(array)),
-            DataType::Int32 => serializer.collect_seq(primitive_array_iter::<i32>(array)),
-            DataType::Int64 => serializer.collect_seq(primitive_array_iter::<i64>(array)),
+            DataType::Utf8 | DataType::LargeUtf8 => {
+                serializer.collect_seq(array.as_any().downcast_ref::<StringArray>().unwrap().iter())
+            }
+            DataType::Int8 => {
+                serializer.collect_seq(primitive_array_iter::<types::Int8Type>(array))
+            }
+            DataType::Int16 => {
+                serializer.collect_seq(primitive_array_iter::<types::Int16Type>(array))
+            }
+            DataType::Int32 => {
+                serializer.collect_seq(primitive_array_iter::<types::Int32Type>(array))
+            }
+            DataType::Int64 => {
+                serializer.collect_seq(primitive_array_iter::<types::Int64Type>(array))
+            }
             DataType::Date32 => serializer.collect_seq(
-                primitive_array_iter::<i32>(array)
-                    .map(|opt| opt.map(|&x| i64::from(x) * MILLISECONDS_IN_DAY)),
+                primitive_array_iter::<types::Date32Type>(array)
+                    .map(|opt| opt.map(|x| i64::from(x) * MILLISECONDS_IN_DAY)),
             ),
-            DataType::Date64 => serializer.collect_seq(primitive_array_iter::<i64>(array)),
+            DataType::Date64 => {
+                serializer.collect_seq(primitive_array_iter::<types::Date64Type>(array))
+            }
             DataType::Timestamp(TimeUnit::Second, _) => {
                 // Timestamps should be serialized to JSON as milliseconds.
                 serializer.collect_seq(
-                    primitive_array_iter::<i64>(array).map(|opt| opt.map(|x| x * 1_000)),
+                    primitive_array_iter::<types::TimestampSecondType>(array)
+                        .map(|opt| opt.map(|x| x * 1_000)),
                 )
             }
             DataType::Timestamp(TimeUnit::Millisecond, _) => {
                 // Timestamps should be serialized to JSON as milliseconds.
-                serializer.collect_seq(primitive_array_iter::<i64>(array))
+                serializer.collect_seq(primitive_array_iter::<types::TimestampMillisecondType>(
+                    array,
+                ))
             }
             DataType::Timestamp(TimeUnit::Microsecond, _) => {
                 // Timestamps should be serialized to JSON as milliseconds.
                 serializer.collect_seq(
-                    primitive_array_iter::<i64>(array).map(|opt| opt.map(|x| x / 1_000)),
+                    primitive_array_iter::<types::TimestampMicrosecondType>(array)
+                        .map(|opt| opt.map(|x| x / 1_000)),
                 )
             }
             DataType::Timestamp(TimeUnit::Nanosecond, _) => {
                 // Timestamps should be serialized to JSON as milliseconds.
                 serializer.collect_seq(
-                    primitive_array_iter::<i64>(array).map(|opt| opt.map(|x| x / 1_000_000)),
+                    primitive_array_iter::<types::TimestampNanosecondType>(array)
+                        .map(|opt| opt.map(|x| x / 1_000_000)),
                 )
             }
-            DataType::UInt8 => serializer.collect_seq(primitive_array_iter::<u8>(array)),
-            DataType::UInt16 => serializer.collect_seq(primitive_array_iter::<u16>(array)),
-            DataType::UInt32 => serializer.collect_seq(primitive_array_iter::<u32>(array)),
-            DataType::UInt64 => serializer.collect_seq(primitive_array_iter::<u64>(array)),
-            DataType::Float32 => {
-                serialize_floats_and_collect_entities::<S, f32>(serializer, array, self.1)
+            DataType::UInt8 => {
+                serializer.collect_seq(primitive_array_iter::<types::UInt8Type>(array))
             }
-            DataType::Float64 => {
-                serialize_floats_and_collect_entities::<S, f64>(serializer, array, self.1)
+            DataType::UInt16 => {
+                serializer.collect_seq(primitive_array_iter::<types::UInt16Type>(array))
             }
+            DataType::UInt32 => {
+                serializer.collect_seq(primitive_array_iter::<types::UInt32Type>(array))
+            }
+            DataType::UInt64 => {
+                serializer.collect_seq(primitive_array_iter::<types::UInt64Type>(array))
+            }
+            DataType::Float32 => serialize_floats_and_collect_entities::<S, types::Float32Type>(
+                serializer, array, self.1,
+            ),
+            DataType::Float64 => serialize_floats_and_collect_entities::<S, types::Float64Type>(
+                serializer, array, self.1,
+            ),
             _ => Err(S::Error::custom("unsupported arrow datatype")),
         }
     }
 }
 
-fn primitive_array_iter<T>(array: &dyn Array) -> impl Iterator<Item = Option<&T>>
+fn primitive_array_iter<T>(
+    array: &dyn Array,
+) -> impl Iterator<Item = Option<<T as ArrowPrimitiveType>::Native>> + '_
 where
-    T: NativeType + Clone,
+    T: ArrowPrimitiveType,
 {
     array
         .as_any()
@@ -224,7 +244,8 @@ fn serialize_floats_and_collect_entities<S, T>(
 ) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
-    T: NativeType + Float + Serialize,
+    T: ArrowPrimitiveType,
+    <T as ArrowPrimitiveType>::Native: Float + Serialize,
 {
     let array = array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap();
     let mut seq = serializer.serialize_seq(Some(array.len()))?;
@@ -256,8 +277,10 @@ pub(crate) struct Entities {
 
 #[cfg(test)]
 mod test {
-    use arrow2::{
-        array::PrimitiveArray,
+    use std::sync::Arc;
+
+    use arrow::{
+        array::{types, PrimitiveArray},
         datatypes::{DataType, TimeUnit},
     };
     use pretty_assertions::assert_eq;
@@ -289,7 +312,9 @@ mod test {
                     name: "int8_values".to_string(),
                     labels: Default::default(),
                     config: None,
-                    values: Box::new(PrimitiveArray::<i8>::from_slice([-128, -128, 0, 127, 127])),
+                    values: Arc::new(PrimitiveArray::<types::Int8Type>::from_iter_values([
+                        -128, -128, 0, 127, 127,
+                    ])),
                     type_info: TypeInfo {
                         frame: TypeInfoType::Int8,
                         nullable: Some(false),
@@ -299,9 +324,11 @@ mod test {
                     name: "date32_values".to_string(),
                     labels: Default::default(),
                     config: None,
-                    values: Box::new(
-                        PrimitiveArray::<i32>::from_slice([18895, 18896, 18897, 18898, 18899])
-                            .to(DataType::Date32),
+                    values: Arc::new(
+                        PrimitiveArray::<types::Date32Type>::from_iter_values([
+                            18895, 18896, 18897, 18898, 18899,
+                        ])
+                        .reinterpret_cast::<types::Date32Type>(),
                     ),
                     type_info: TypeInfo {
                         frame: TypeInfoType::Time,
@@ -312,15 +339,15 @@ mod test {
                     name: "date64_values".to_string(),
                     labels: Default::default(),
                     config: None,
-                    values: Box::new(
-                        PrimitiveArray::<i64>::from_slice([
+                    values: Arc::new(
+                        PrimitiveArray::<types::Date64Type>::from_iter_values([
                             1632528000000,
                             1632614400000,
                             1632700800000,
                             1632787200000,
                             1632873600000,
                         ])
-                        .to(DataType::Date64),
+                        .reinterpret_cast::<types::Date64Type>(),
                     ),
                     type_info: TypeInfo {
                         frame: TypeInfoType::Time,
@@ -331,11 +358,10 @@ mod test {
                     name: "timestamp_s_values".to_string(),
                     labels: Default::default(),
                     config: None,
-                    values: Box::new(
-                        PrimitiveArray::<i64>::from_slice([
+                    values: Arc::new(
+                        PrimitiveArray::<types::TimestampSecondType>::from_iter_values([
                             1632855151, 1632855152, 1632855153, 1632855154, 1632855155,
-                        ])
-                        .to(DataType::Timestamp(TimeUnit::Second, None)),
+                        ]),
                     ),
                     type_info: TypeInfo {
                         frame: TypeInfoType::Time,
@@ -346,15 +372,14 @@ mod test {
                     name: "timestamp_ms_values".to_string(),
                     labels: Default::default(),
                     config: None,
-                    values: Box::new(
-                        PrimitiveArray::<i64>::from_slice([
+                    values: Arc::new(
+                        PrimitiveArray::<types::TimestampMillisecondType>::from_iter_values([
                             1632855151000,
                             1632855152000,
                             1632855153000,
                             1632855154000,
                             1632855155000,
-                        ])
-                        .to(DataType::Timestamp(TimeUnit::Millisecond, None)),
+                        ]),
                     ),
                     type_info: TypeInfo {
                         frame: TypeInfoType::Time,
@@ -365,15 +390,14 @@ mod test {
                     name: "timestamp_us_values".to_string(),
                     labels: Default::default(),
                     config: None,
-                    values: Box::new(
-                        PrimitiveArray::<i64>::from_slice([
+                    values: Arc::new(
+                        PrimitiveArray::<types::TimestampMicrosecondType>::from_iter_values([
                             1632855151000000,
                             1632855152000000,
                             1632855153000000,
                             1632855154000000,
                             1632855155000000,
-                        ])
-                        .to(DataType::Timestamp(TimeUnit::Microsecond, None)),
+                        ]),
                     ),
                     type_info: TypeInfo {
                         frame: TypeInfoType::Time,
@@ -384,17 +408,17 @@ mod test {
                     name: "timestamp_ns_values".to_string(),
                     labels: Default::default(),
                     config: None,
-                    values: Box::new(
-                        PrimitiveArray::<i64>::from_slice([
+                    values: Arc::new(
+                        PrimitiveArray::<types::TimestampNanosecondType>::from_iter_values([
                             1632855151000000000,
                             1632855152000000000,
                             1632855153000000000,
                             1632855154000000000,
                             1632855155000000000,
                         ])
-                        .to(DataType::Timestamp(
+                        .with_data_type(DataType::Timestamp(
                             TimeUnit::Nanosecond,
-                            Some("+12:00".to_string()),
+                            Some("+12:00".into()),
                         )),
                     ),
                     type_info: TypeInfo {

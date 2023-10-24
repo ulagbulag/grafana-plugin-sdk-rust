@@ -142,9 +142,7 @@ impl backend::StreamService for MyPluginService {
         Ok(Box::pin(
             async_stream::try_stream! {
                 loop {
-                    frame.fields_mut()[0].set_values(
-                        (x..x+n)
-                    )?;
+                    frame.fields_mut()[0].set_values(x..x+n)?;
                     let packet = backend::StreamPacket::from_frame(frame.check()?)?;
                     debug!("Yielding frame from {} to {}", x, x+n);
                     yield packet;

@@ -11,8 +11,8 @@ use crate::{
     live::Channel,
 };
 
-pub(self) mod de;
-pub(self) mod ser;
+mod de;
+mod ser;
 pub(crate) mod to_arrow;
 
 use ser::{SerializableField, SerializableFrame, SerializableFrameData, SerializableFrameSchema};
@@ -184,7 +184,7 @@ impl Frame {
     /// # Example
     ///
     /// ```rust
-    /// use arrow2::array::{PrimitiveArray, Utf8Array};
+    /// use grafana_plugin_sdk::arrow::array::{types, PrimitiveArray, StringArray};
     /// use grafana_plugin_sdk::prelude::*;
     ///
     /// // Create an initial `Frame`.
@@ -203,18 +203,18 @@ impl Frame {
     ///         .fields()[0]
     ///         .values()
     ///         .as_any()
-    ///         .downcast_ref::<PrimitiveArray<u32>>()
+    ///         .downcast_ref::<PrimitiveArray<types::UInt32Type>>()
     ///         .unwrap()
     ///         .iter()
     ///         .collect::<Vec<_>>(),
-    ///     vec![Some(&4), Some(&5), Some(&6)],
+    ///     vec![Some(4u32), Some(5u32), Some(6u32)],
     /// );
     /// assert_eq!(
     ///     frame
     ///         .fields()[1]
     ///         .values()
     ///         .as_any()
-    ///         .downcast_ref::<Utf8Array<i32>>()
+    ///         .downcast_ref::<StringArray>()
     ///         .unwrap()
     ///         .iter()
     ///         .collect::<Vec<_>>(),
@@ -240,7 +240,7 @@ impl Frame {
     /// # Example
     ///
     /// ```rust
-    /// use arrow2::array::{PrimitiveArray, Utf8Array};
+    /// use grafana_plugin_sdk::arrow::array::{PrimitiveArray, StringArray};
     /// use grafana_plugin_sdk::prelude::*;
     ///
     /// assert!(

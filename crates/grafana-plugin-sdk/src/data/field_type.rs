@@ -1,8 +1,8 @@
 //! Types of field understood by the Grafana plugin SDK.
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use arrow2::{
-    array::{BooleanArray, PrimitiveArray, Utf8Array},
+use arrow::{
+    array::{types, BooleanArray, PrimitiveArray, StringArray, TimestampNanosecondArray},
     datatypes::{DataType, TimeUnit},
 };
 use chrono::prelude::*;
@@ -56,13 +56,10 @@ where
 }
 
 macro_rules! impl_fieldtype_for_primitive {
-    ($ty: ty, $arrow_ty: expr, $type_info: expr) => {
+    ($ty: ty, $array_ty: ty, $arrow_ty: expr, $type_info: expr) => {
         impl FieldType for $ty {
-            type Array = PrimitiveArray<$ty>;
+            type Array = PrimitiveArray<$array_ty>;
             const ARROW_DATA_TYPE: DataType = $arrow_ty;
-            fn convert_arrow_array(array: Self::Array, data_type: DataType) -> Self::Array {
-                array.to(data_type)
-            }
         }
 
         impl IntoFieldType for $ty {
@@ -75,26 +72,47 @@ macro_rules! impl_fieldtype_for_primitive {
     };
 }
 
-impl_fieldtype_for_primitive!(i8, DataType::Int8, TypeInfoType::Int8);
-impl_fieldtype_for_primitive!(i16, DataType::Int16, TypeInfoType::Int16);
-impl_fieldtype_for_primitive!(i32, DataType::Int32, TypeInfoType::Int32);
-impl_fieldtype_for_primitive!(i64, DataType::Int64, TypeInfoType::Int64);
-impl_fieldtype_for_primitive!(u8, DataType::UInt8, TypeInfoType::UInt8);
-impl_fieldtype_for_primitive!(u16, DataType::UInt16, TypeInfoType::UInt16);
-impl_fieldtype_for_primitive!(u32, DataType::UInt32, TypeInfoType::UInt32);
-impl_fieldtype_for_primitive!(u64, DataType::UInt64, TypeInfoType::UInt64);
-impl_fieldtype_for_primitive!(f32, DataType::Float32, TypeInfoType::Float32);
-impl_fieldtype_for_primitive!(f64, DataType::Float64, TypeInfoType::Float64);
+impl_fieldtype_for_primitive!(i8, types::Int8Type, DataType::Int8, TypeInfoType::Int8);
+impl_fieldtype_for_primitive!(i16, types::Int16Type, DataType::Int16, TypeInfoType::Int16);
+impl_fieldtype_for_primitive!(i32, types::Int32Type, DataType::Int32, TypeInfoType::Int32);
+impl_fieldtype_for_primitive!(i64, types::Int64Type, DataType::Int64, TypeInfoType::Int64);
+impl_fieldtype_for_primitive!(u8, types::UInt8Type, DataType::UInt8, TypeInfoType::UInt8);
+impl_fieldtype_for_primitive!(
+    u16,
+    types::UInt16Type,
+    DataType::UInt16,
+    TypeInfoType::UInt16
+);
+impl_fieldtype_for_primitive!(
+    u32,
+    types::UInt32Type,
+    DataType::UInt32,
+    TypeInfoType::UInt32
+);
+impl_fieldtype_for_primitive!(
+    u64,
+    types::UInt64Type,
+    DataType::UInt64,
+    TypeInfoType::UInt64
+);
+impl_fieldtype_for_primitive!(
+    f32,
+    types::Float32Type,
+    DataType::Float32,
+    TypeInfoType::Float32
+);
+impl_fieldtype_for_primitive!(
+    f64,
+    types::Float64Type,
+    DataType::Float64,
+    TypeInfoType::Float64
+);
 
 // Boolean impl.
 
 impl FieldType for bool {
     type Array = BooleanArray;
     const ARROW_DATA_TYPE: DataType = DataType::Boolean;
-
-    fn convert_arrow_array(array: Self::Array, _data_type: DataType) -> Self::Array {
-        array
-    }
 }
 
 impl IntoFieldType for bool {
@@ -109,13 +127,8 @@ impl IntoFieldType for bool {
 // DateTime impls.
 
 impl FieldType for SystemTime {
-    type Array = PrimitiveArray<i64>;
+    type Array = TimestampNanosecondArray;
     const ARROW_DATA_TYPE: DataType = DataType::Timestamp(TimeUnit::Nanosecond, None);
-
-    /// Convert the logical type of `Self::Array` to `DataType::Timestamp`.
-    fn convert_arrow_array(array: Self::Array, data_type: DataType) -> Self::Array {
-        array.to(data_type)
-    }
 }
 
 impl IntoFieldType for SystemTime {
@@ -133,13 +146,8 @@ impl<T> FieldType for DateTime<T>
 where
     T: Offset + TimeZone,
 {
-    type Array = PrimitiveArray<i64>;
+    type Array = TimestampNanosecondArray;
     const ARROW_DATA_TYPE: DataType = DataType::Timestamp(TimeUnit::Nanosecond, None);
-
-    /// Convert the logical type of `Self::Array` to `DataType::Timestamp`.
-    fn convert_arrow_array(array: Self::Array, data_type: DataType) -> Self::Array {
-        array.to(data_type)
-    }
 }
 
 impl<T> IntoFieldType for DateTime<T>
@@ -149,7 +157,7 @@ where
     type ElementType = i64;
     const TYPE_INFO_TYPE: TypeInfoType = TypeInfoType::Time;
     fn into_field_type(self) -> Option<Self::ElementType> {
-        Some(self.timestamp_nanos())
+        self.timestamp_nanos_opt()
     }
 }
 
@@ -160,13 +168,8 @@ impl<T> FieldType for Date<T>
 where
     T: Offset + TimeZone,
 {
-    type Array = PrimitiveArray<i64>;
+    type Array = TimestampNanosecondArray;
     const ARROW_DATA_TYPE: DataType = DataType::Timestamp(TimeUnit::Nanosecond, None);
-
-    /// Convert the logical type of `Self::Array` to `DataType::Timestamp`.
-    fn convert_arrow_array(array: Self::Array, data_type: DataType) -> Self::Array {
-        array.to(data_type)
-    }
 }
 
 // The `Date` type was only recently deprecated, we should remove support for it in the next
@@ -188,49 +191,37 @@ where
 }
 
 impl FieldType for NaiveDate {
-    type Array = PrimitiveArray<i64>;
+    type Array = TimestampNanosecondArray;
     const ARROW_DATA_TYPE: DataType = DataType::Timestamp(TimeUnit::Nanosecond, None);
-
-    /// Convert the logical type of `Self::Array` to `DataType::Timestamp`.
-    fn convert_arrow_array(array: Self::Array, data_type: DataType) -> Self::Array {
-        array.to(data_type)
-    }
 }
 
 impl IntoFieldType for NaiveDate {
     type ElementType = i64;
     const TYPE_INFO_TYPE: TypeInfoType = TypeInfoType::Time;
     fn into_field_type(self) -> Option<Self::ElementType> {
-        Some(
-            self.and_hms_opt(0, 0, 0)
-                .expect("hms are valid")
-                .timestamp_nanos(),
-        )
+        self.and_hms_opt(0, 0, 0)
+            .expect("hms are valid")
+            .timestamp_nanos_opt()
     }
 }
 
 impl FieldType for NaiveDateTime {
-    type Array = PrimitiveArray<i64>;
+    type Array = TimestampNanosecondArray;
     const ARROW_DATA_TYPE: DataType = DataType::Timestamp(TimeUnit::Nanosecond, None);
-
-    /// Convert the logical type of `Self::Array` to `DataType::Timestamp`.
-    fn convert_arrow_array(array: Self::Array, data_type: DataType) -> Self::Array {
-        array.to(data_type)
-    }
 }
 
 impl IntoFieldType for NaiveDateTime {
     type ElementType = i64;
     const TYPE_INFO_TYPE: TypeInfoType = TypeInfoType::Time;
     fn into_field_type(self) -> Option<Self::ElementType> {
-        Some(self.timestamp_nanos())
+        self.timestamp_nanos_opt()
     }
 }
 
 // String impls.
 
 impl FieldType for &str {
-    type Array = Utf8Array<i32>;
+    type Array = StringArray;
     const ARROW_DATA_TYPE: DataType = DataType::Utf8;
 }
 
@@ -243,7 +234,7 @@ impl<'a> IntoFieldType for &'a str {
 }
 
 impl FieldType for String {
-    type Array = Utf8Array<i32>;
+    type Array = StringArray;
     const ARROW_DATA_TYPE: DataType = DataType::Utf8;
 }
 

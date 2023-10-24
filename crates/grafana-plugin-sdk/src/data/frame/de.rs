@@ -1,12 +1,9 @@
 //! Deserialization of [`Frame`]s from the JSON format.
 use std::{collections::BTreeMap, fmt, marker::PhantomData};
 
-use arrow2::{
-    array::{
-        Array, MutableArray, MutableBooleanArray, MutablePrimitiveArray, MutableUtf8Array, TryPush,
-    },
-    datatypes::{DataType, TimeUnit},
-    types::{NativeType, Offset},
+use arrow::{
+    array::{types, ArrayBuilder, ArrayRef, BooleanBuilder, PrimitiveBuilder, StringBuilder},
+    datatypes::ArrowPrimitiveType,
 };
 use num_traits::Float;
 use serde::{
@@ -83,7 +80,7 @@ impl<'de> Deserialize<'de> for Frame {
                     fields: schema
                         .fields
                         .into_iter()
-                        .zip(data.values.into_iter())
+                        .zip(data.values)
                         .map(|(f, values)| crate::data::field::Field {
                             name: f.name,
                             labels: f.labels,
@@ -136,7 +133,7 @@ struct RawData<'a> {
 
 #[derive(Debug)]
 struct Data {
-    values: Vec<Box<dyn Array>>,
+    values: Vec<ArrayRef>,
 }
 
 impl TryFrom<(&'_ Schema, RawData<'_>)> for Data {
@@ -161,50 +158,46 @@ impl TryFrom<(&'_ Schema, RawData<'_>)> for Data {
                 .zip(entities)
                 .map(|((f, v), e)| {
                     let s = v.get();
-                    let arr: Box<dyn Array> = match f.type_info.frame {
+                    let arr = match f.type_info.frame {
                         TypeInfoType::Int8 => {
-                            parse_array::<MutablePrimitiveArray<i8>, i8, ()>(s)?.as_box()
+                            parse_array::<PrimitiveBuilder<types::Int8Type>, i8, ()>(s)?
                         }
                         TypeInfoType::Int16 => {
-                            parse_array::<MutablePrimitiveArray<i16>, i16, ()>(s)?.as_box()
+                            parse_array::<PrimitiveBuilder<types::Int16Type>, i16, ()>(s)?
                         }
                         TypeInfoType::Int32 => {
-                            parse_array::<MutablePrimitiveArray<i32>, i32, ()>(s)?.as_box()
+                            parse_array::<PrimitiveBuilder<types::Int32Type>, i32, ()>(s)?
                         }
                         TypeInfoType::Int64 => {
-                            parse_array::<MutablePrimitiveArray<i64>, i64, ()>(s)?.as_box()
+                            parse_array::<PrimitiveBuilder<types::Int64Type>, i64, ()>(s)?
                         }
                         TypeInfoType::UInt8 => {
-                            parse_array::<MutablePrimitiveArray<u8>, u8, ()>(s)?.as_box()
+                            parse_array::<PrimitiveBuilder<types::UInt8Type>, u8, ()>(s)?
                         }
                         TypeInfoType::UInt16 => {
-                            parse_array::<MutablePrimitiveArray<u16>, u16, ()>(s)?.as_box()
+                            parse_array::<PrimitiveBuilder<types::UInt16Type>, u16, ()>(s)?
                         }
                         TypeInfoType::UInt32 => {
-                            parse_array::<MutablePrimitiveArray<u32>, u32, ()>(s)?.as_box()
+                            parse_array::<PrimitiveBuilder<types::UInt32Type>, u32, ()>(s)?
                         }
                         TypeInfoType::UInt64 => {
-                            parse_array::<MutablePrimitiveArray<u64>, u64, ()>(s)?.as_box()
+                            parse_array::<PrimitiveBuilder<types::UInt64Type>, u64, ()>(s)?
                         }
-                        TypeInfoType::Float32 => {
-                            parse_array_with_entities::<MutablePrimitiveArray<f32>, f32>(s, e)?
-                                .as_box()
-                        }
-                        TypeInfoType::Float64 => {
-                            parse_array_with_entities::<MutablePrimitiveArray<f64>, f64>(s, e)?
-                                .as_box()
-                        }
-                        TypeInfoType::String => {
-                            parse_array::<MutableUtf8Array<i32>, String, ()>(s)?.as_box()
-                        }
-                        TypeInfoType::Bool => {
-                            parse_array::<MutableBooleanArray, bool, ()>(s)?.as_box()
-                        }
-                        TypeInfoType::Time => {
-                            parse_array::<MutablePrimitiveArray<i64>, i64, TimestampProcessor>(s)?
-                                .to(DataType::Timestamp(TimeUnit::Nanosecond, None))
-                                .as_box()
-                        }
+                        TypeInfoType::Float32 => parse_array_with_entities::<
+                            PrimitiveBuilder<types::Float32Type>,
+                            f32,
+                        >(s, e)?,
+                        TypeInfoType::Float64 => parse_array_with_entities::<
+                            PrimitiveBuilder<types::Float64Type>,
+                            f64,
+                        >(s, e)?,
+                        TypeInfoType::String => parse_array::<StringBuilder, String, ()>(s)?,
+                        TypeInfoType::Bool => parse_array::<BooleanBuilder, bool, ()>(s)?,
+                        TypeInfoType::Time => parse_array::<
+                            PrimitiveBuilder<types::TimestampNanosecondType>,
+                            i64,
+                            TimestampProcessor,
+                        >(s)?,
                     };
                     Ok(arr)
                 })
@@ -220,13 +213,13 @@ impl TryFrom<(&'_ Schema, RawData<'_>)> for Data {
 /// Returns an error if the string is invalid JSON, if the elements of
 /// the array are not of type `U`,  or if the Arrow buffer could not be
 /// created.
-fn parse_array<'de, T, U, V>(s: &'de str) -> Result<T, serde_json::Error>
+fn parse_array<'de, T, U, V>(s: &'de str) -> Result<ArrayRef, serde_json::Error>
 where
-    T: Default + MutableArray + TryPush<Option<U>> + WithCapacity,
+    T: Default + ArrayBuilder + AppendArray<U> + WithCapacity,
     U: Deserialize<'de>,
     V: ElementProcessor<U>,
 {
-    Ok(from_str::<DeArray<T, U, V>>(s)?.array)
+    Ok(from_str::<DeArray<T, U, V>>(s)?.array.finish())
 }
 
 /// Parse a JSON array containing elements of `U` into a mutable Arrow array `T`,
@@ -245,22 +238,22 @@ where
 fn parse_array_with_entities<'de, T, U>(
     s: &'de str,
     entities: Option<Entities>,
-) -> Result<T, serde_json::Error>
+) -> Result<ArrayRef, serde_json::Error>
 where
-    T: Default + MutableArray + SetArray<Option<U>> + TryPush<Option<U>> + WithCapacity,
+    T: Default + ArrayBuilder + AppendArray<U> + SetArray<U> + WithCapacity,
     U: Deserialize<'de> + Float,
 {
     let mut arr = from_str::<DeArray<T, U>>(s)?.array;
     if let Some(e) = entities {
-        e.nan.iter().for_each(|idx| arr.set(*idx, Some(U::nan())));
+        e.nan.into_iter().for_each(|idx| arr.set(idx, U::nan()));
         e.inf
-            .iter()
-            .for_each(|idx| arr.set(*idx, Some(U::infinity())));
+            .into_iter()
+            .for_each(|idx| arr.set(idx, U::infinity()));
         e.neg_inf
-            .iter()
-            .for_each(|idx| arr.set(*idx, Some(U::neg_infinity())));
+            .into_iter()
+            .for_each(|idx| arr.set(idx, U::neg_infinity()));
     }
-    Ok(arr)
+    Ok(arr.finish())
 }
 
 trait ElementProcessor<T> {
@@ -294,7 +287,7 @@ struct DeArray<T, U, V = ()> {
 // and gradually build up the array.
 impl<'de, T, U, V> Deserialize<'de> for DeArray<T, U, V>
 where
-    T: Default + TryPush<Option<U>> + WithCapacity,
+    T: Default + AppendArray<U> + WithCapacity,
     U: Deserialize<'de>,
     V: ElementProcessor<U>,
 {
@@ -306,7 +299,7 @@ where
 
         impl<'de, T, U, V> Visitor<'de> for ArrayVisitor<T, U, V>
         where
-            T: Default + TryPush<Option<U>> + WithCapacity,
+            T: Default + AppendArray<U> + WithCapacity,
             U: Deserialize<'de>,
             V: ElementProcessor<U>,
         {
@@ -322,9 +315,7 @@ where
             {
                 let mut array = seq.size_hint().map_or_else(T::default, T::with_capacity);
                 while let Some(x) = seq.next_element::<Option<U>>()? {
-                    array.try_push(x.map(V::process_element)).map_err(|e| {
-                        S::Error::custom(format!("could not push to Arrow array: {}", e))
-                    })?;
+                    array.append_option(x.map(V::process_element));
                 }
                 Ok(Self::Value {
                     array,
@@ -335,6 +326,30 @@ where
         }
 
         deserializer.deserialize_seq(ArrayVisitor(PhantomData, PhantomData, PhantomData))
+    }
+}
+
+/// Indicates that an array can append elements.
+trait AppendArray<T> {
+    /// Appends an `Option<T>` into the builder
+    fn append_option(&mut self, value: Option<T>);
+}
+
+impl<T: ArrowPrimitiveType> AppendArray<<T as ArrowPrimitiveType>::Native> for PrimitiveBuilder<T> {
+    fn append_option(&mut self, value: Option<<T as ArrowPrimitiveType>::Native>) {
+        self.append_option(value);
+    }
+}
+
+impl AppendArray<bool> for BooleanBuilder {
+    fn append_option(&mut self, value: Option<bool>) {
+        self.append_option(value);
+    }
+}
+
+impl AppendArray<String> for StringBuilder {
+    fn append_option(&mut self, value: Option<String>) {
+        self.append_option(value);
     }
 }
 
@@ -351,9 +366,9 @@ trait SetArray<T> {
     fn set(&mut self, index: usize, value: T);
 }
 
-impl<T: NativeType> SetArray<Option<T>> for MutablePrimitiveArray<T> {
-    fn set(&mut self, index: usize, value: Option<T>) {
-        self.set(index, value);
+impl<T: ArrowPrimitiveType> SetArray<<T as ArrowPrimitiveType>::Native> for PrimitiveBuilder<T> {
+    fn set(&mut self, index: usize, value: <T as ArrowPrimitiveType>::Native) {
+        self.values_slice_mut()[index] = value;
     }
 }
 
@@ -366,21 +381,21 @@ trait WithCapacity {
     fn with_capacity(capacity: usize) -> Self;
 }
 
-impl<T: NativeType> WithCapacity for MutablePrimitiveArray<T> {
+impl<T: ArrowPrimitiveType> WithCapacity for PrimitiveBuilder<T> {
     fn with_capacity(capacity: usize) -> Self {
         Self::with_capacity(capacity)
     }
 }
 
-impl WithCapacity for MutableBooleanArray {
+impl WithCapacity for BooleanBuilder {
     fn with_capacity(capacity: usize) -> Self {
         Self::with_capacity(capacity)
     }
 }
 
-impl<T: Offset> WithCapacity for MutableUtf8Array<T> {
+impl WithCapacity for StringBuilder {
     fn with_capacity(capacity: usize) -> Self {
-        Self::with_capacity(capacity)
+        Self::with_capacity(capacity, capacity)
     }
 }
 
